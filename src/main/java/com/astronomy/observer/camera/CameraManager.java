@@ -121,10 +121,10 @@ public class CameraManager implements WebcamListener {
 
     public boolean setResolution(int width, int height) {
         if (currentCamera != null) {
-            Dimension[] sizes = currentCamera.getCustomSizes();
+            Dimension[] sizes = currentCamera.getViewSizes();
             for (Dimension size : sizes) {
                 if (size.width == width && size.height == height) {
-                    currentCamera.setCustomSize(size);
+                    currentCamera.setViewSize(size);
                     logger.info("Resolution set to: {}x{}", width, height);
                     return true;
                 }
@@ -136,7 +136,7 @@ public class CameraManager implements WebcamListener {
 
     public Dimension[] getSupportedResolutions() {
         if (currentCamera != null) {
-            return currentCamera.getCustomSizes();
+            return currentCamera.getViewSizes();
         }
         return new Dimension[0];
     }

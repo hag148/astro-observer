@@ -277,6 +277,15 @@ public class ImageStacker {
     }
 
     /**
+     * 获取当前堆栈大小（别名方法，保持向后兼容）
+     * @deprecated 使用 getStackSize() 代替
+     */
+    @Deprecated
+    public int getCurrentStackSize() {
+        return getStackSize();
+    }
+
+    /**
      * 获取已添加的图像总数
      */
     public int getStackCount() {

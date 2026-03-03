@@ -3,6 +3,7 @@ package com.astronomy.observer.image;
 import org.bytedeco.opencv.global.opencv_core;
 import org.bytedeco.opencv.global.opencv_imgcodecs;
 import org.bytedeco.opencv.global.opencv_imgproc;
+import org.bytedeco.opencv.global.opencv_photo;
 import org.bytedeco.opencv.opencv_core.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -10,6 +11,8 @@ import org.slf4j.LoggerFactory;
 import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferByte;
 import java.io.File;
+import java.nio.ByteBuffer;
+import java.nio.FloatBuffer;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -30,7 +33,7 @@ public class OpenCVImageProcessor {
     static {
         // 加载OpenCV本地库
         try {
-            opencv_core.noImage(); // 触发本地库加载
+            opencv_core.randn(new Mat(), new Scalar(), new Scalar()); // 触发本地库加载
             logger.info("OpenCV loaded successfully");
         } catch (Exception e) {
             logger.error("Failed to load OpenCV", e);
@@ -169,9 +172,8 @@ public class OpenCVImageProcessor {
      */
     private static double getPixelBrightness(Mat gray, int x, int y) {
         if (x >= 0 && x < gray.cols() && y >= 0 && y < gray.rows()) {
-            double[] pixel = new double[1];
-            gray.ptr(y).position(x).get(pixel);
-            return pixel[0];
+            ByteBuffer buffer = gray.ptr(y).position(x).asByteBuffer();
+            return buffer.get() & 0xFF;
         }
         return 0;
     }
@@ -203,13 +205,19 @@ public class OpenCVImageProcessor {
 
         // 锐化滤波器
         Mat kernel = new Mat(3, 3, opencv_core.CV_32F);
-        kernel.ptr(0).put(new float[]{
-            0, -1, 0,
-            -1, 5, -1,
-            0, -1, 0
-        });
-        opencv_imgproc.filter2D(enhanced, enhanced, -1, kernel, new double[]{0}, 0,
-            opencv_core.BORDER_DEFAULT);
+        FloatBuffer kernelBuffer = kernel.createBuffer();
+        kernelBuffer.put(0, 0.0f);
+        kernelBuffer.put(1, -1.0f);
+        kernelBuffer.put(2, 0.0f);
+        kernelBuffer.put(3, -1.0f);
+        kernelBuffer.put(4, 5.0f);
+        kernelBuffer.put(5, -1.0f);
+        kernelBuffer.put(6, 0.0f);
+        kernelBuffer.put(7, -1.0f);
+        kernelBuffer.put(8, 0.0f);
+        
+        opencv_imgproc.filter2D(enhanced, enhanced, -1, kernel, new Point(0, 0), 0.0,
+            opencv_core.BORDER_DEFAULT, new Scalar());
 
         // 释放资源
         hsv.release();
@@ -230,7 +238,7 @@ public class OpenCVImageProcessor {
         }
 
         Mat result = new Mat();
-        image.convertTo(result, -1, alpha, 0);
+        image.convertTo(result, -1, alpha, 0.0);
 
         return result;
     }
@@ -273,7 +281,10 @@ public class OpenCVImageProcessor {
 
         for (int i = 0; i < 3; i++) {
             double alpha = avgMean / means[i];
-            opencv_core.multiply(channels.get(i), Scalar.all(alpha), channels.get(i));
+            Mat scalarMat = new Mat(channels.get(i).rows(), channels.get(i).cols(), 
+                channels.get(i).type(), new Scalar(alpha, alpha, alpha));
+            opencv_core.multiply(channels.get(i), scalarMat, channels.get(i));
+            scalarMat.release();
         }
 
         opencv_core.merge(channels, result);
@@ -295,7 +306,7 @@ public class OpenCVImageProcessor {
         }
 
         Mat result = new Mat();
-        opencv_imgproc.fastNlMeansDenoisingColored(image, result, 10, 10, 7, 21);
+        opencv_photo.fastNlMeansDenoisingColored(image, result, 10.0, 10.0, 7, 21);
 
         return result;
     }
@@ -395,16 +406,20 @@ public class OpenCVImageProcessor {
         }
 
         // 使用ECC算法进行配准
-        Mat warpMatrix = Mat.eye(3, 3, opencv_core.CV_32F);
+        Mat warpMatrix = new Mat(2, 3, opencv_core.CV_32F);
+        Mat eyeMatrix = opencv_core.eye(2, 3, opencv_core.CV_32F).asMat();
+        warpMatrix.put(eyeMatrix);
+        eyeMatrix.release();
+        
         Mat gray1 = new Mat();
         Mat gray2 = new Mat();
 
         opencv_imgproc.cvtColor(reference, gray1, opencv_imgproc.COLOR_BGR2GRAY);
         opencv_imgproc.cvtColor(target, gray2, opencv_imgproc.COLOR_BGR2GRAY);
 
-        // 寻找变换矩阵
+        // 寻找变换矩阵 (4.13.0不支持MOTION_AFFINE，使用MOTION_TRANSLATION)
         double cc = opencv_imgproc.findTransformECC(gray1, gray2, warpMatrix,
-            opencv_imgproc.MOTION_AFFINE, new TermCriteria());
+            opencv_imgproc.MOTION_TRANSLATION, new TermCriteria(TermCriteria.EPS | TermCriteria.MAX_ITER, 50, 1e-6));
 
         if (cc < 0) {
             logger.warn("Image alignment failed");

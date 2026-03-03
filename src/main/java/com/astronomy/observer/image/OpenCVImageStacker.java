@@ -6,6 +6,7 @@ import org.bytedeco.opencv.opencv_core.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -110,8 +111,10 @@ public class OpenCVImageStacker {
             opencv_core.add(result, image, result);
         }
 
-        // 除以图像数量
-        opencv_core.divide(result, Scalar.all(stackedImages.size()), result);
+        // 除以图像数量 - 4.13.0需要创建Mat作为第二个参数
+        Mat divisorMat = new Mat(1, 1, type, new Scalar(stackedImages.size()));
+        opencv_core.divide(result, divisorMat, result);
+        divisorMat.release();
 
         return result;
     }
@@ -133,10 +136,10 @@ public class OpenCVImageStacker {
                 for (int c = 0; c < channels; c++) {
                     double[] values = new double[stackedImages.size()];
                     for (int i = 0; i < stackedImages.size(); i++) {
-                        values[i] = stackedImages.get(i).ptr(y, c).getDouble(x);
+                        values[i] = getPixelValue(stackedImages.get(i), x, y, c);
                     }
                     double median = computeMedian(values);
-                    result.ptr(y, c).put(x, median);
+                    setPixelValue(result, x, y, c, median);
                 }
             }
         }
@@ -161,17 +164,33 @@ public class OpenCVImageStacker {
                     // 收集所有值
                     double[] values = new double[stackedImages.size()];
                     for (int i = 0; i < stackedImages.size(); i++) {
-                        values[i] = stackedImages.get(i).ptr(y, c).getDouble(x);
+                        values[i] = getPixelValue(stackedImages.get(i), x, y, c);
                     }
 
                     // 应用Kappa-Sigma算法
                     double filteredValue = applyKappaSigma(values, kappa);
-                    result.ptr(y, c).put(x, filteredValue);
+                    setPixelValue(result, x, y, c, filteredValue);
                 }
             }
         }
 
         return result;
+    }
+
+    /**
+     * 获取像素值
+     */
+    private double getPixelValue(Mat mat, int x, int y, int channel) {
+        ByteBuffer buffer = mat.ptr(y, channel).position(x).asByteBuffer();
+        return buffer.get() & 0xFF;
+    }
+
+    /**
+     * 设置像素值
+     */
+    private void setPixelValue(Mat mat, int x, int y, int channel, double value) {
+        ByteBuffer buffer = mat.ptr(y, channel).position(x).asByteBuffer();
+        buffer.put((byte) value);
     }
 
     /**
@@ -256,7 +275,9 @@ public class OpenCVImageStacker {
             opencv_core.add(result, image, result);
         }
 
-        opencv_core.divide(result, Scalar.all(alignedImages.size()), result);
+        Mat divisorMat = new Mat(1, 1, type, new Scalar(alignedImages.size()));
+        opencv_core.divide(result, divisorMat, result);
+        divisorMat.release();
 
         // 释放临时图像
         for (Mat image : alignedImages) {
@@ -277,13 +298,16 @@ public class OpenCVImageStacker {
         opencv_imgproc.cvtColor(target, gray2, opencv_imgproc.COLOR_BGR2GRAY);
 
         // 定义变换矩阵
-        Mat warpMatrix = opencv_core.eye(3, 3, opencv_core.CV_32F).asMat();
+        Mat warpMatrix = new Mat(2, 3, opencv_core.CV_32F);
+        Mat eyeMat = new Mat(2, 3, opencv_core.CV_32F);
+        opencv_core.setIdentity(eyeMat, new Scalar(1.0));
+        warpMatrix.put(eyeMat);
+        eyeMat.release();
 
-        // 使用ECC算法寻找变换
+        // 使用ECC算法寻找变换 (4.13.0不支持MOTION_AFFINE)
         double cc = opencv_imgproc.findTransformECC(gray1, gray2, warpMatrix,
-            opencv_imgproc.MOTION_AFFINE,
-            new TermCriteria(opencv_core.TERM_CRITERIA_EPS | opencv_core.TERM_CRITERIA_COUNT,
-                            50, 1e-6));
+            opencv_imgproc.MOTION_TRANSLATION,
+            new TermCriteria(TermCriteria.EPS | TermCriteria.MAX_ITER, 50, 1e-6));
 
         gray1.release();
         gray2.release();
