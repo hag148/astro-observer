@@ -1,13 +1,10 @@
 package com.astronomy.observer.image;
 
-import org.opencv.core.*;
-import org.opencv.imgcodecs.Imgcodecs;
-import org.opencv.imgproc.Imgproc;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.awt.image.BufferedImage;
-import java.awt.image.DataBufferByte;
+import java.awt.*;
+import java.awt.image.*;
 import java.io.File;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -17,176 +14,278 @@ import java.util.List;
 public class ImageProcessor {
     private static final Logger logger = LoggerFactory.getLogger(ImageProcessor.class);
 
-    static {
-        System.loadLibrary(Core.NATIVE_LIBRARY_NAME);
-    }
-
     /**
-     * 转换BufferedImage到OpenCV Mat
+     * 检测天体对象（星星、行星等）- 纯Java实现
      */
-    public static Mat bufferedImageToMat(BufferedImage image) {
-        if (image == null) {
-            return null;
-        }
-
-        image = convertToStandardType(image);
-
-        byte[] pixels = ((DataBufferByte) image.getRaster().getDataBuffer()).getData();
-        Mat mat = new Mat(image.getHeight(), image.getWidth(), CvType.CV_8UC3);
-        mat.put(0, 0, pixels);
-
-        // BGR to RGB conversion
-        Mat rgbMat = new Mat();
-        Imgproc.cvtColor(mat, rgbMat, Imgproc.COLOR_BGR2RGB);
-        return rgbMat;
-    }
-
-    /**
-     * 转换为标准图像类型
-     */
-    private static BufferedImage convertToStandardType(BufferedImage image) {
-        if (image.getType() == BufferedImage.TYPE_3BYTE_BGR) {
-            return image;
-        }
-
-        BufferedImage converted = new BufferedImage(
-            image.getWidth(), image.getHeight(), BufferedImage.TYPE_3BYTE_BGR);
-        converted.getGraphics().drawImage(image, 0, 0, null);
-        return converted;
-    }
-
-    /**
-     * 转换OpenCV Mat到BufferedImage
-     */
-    public static BufferedImage matToBufferedImage(Mat mat) {
-        if (mat == null || mat.empty()) {
-            return null;
-        }
-
-        Mat rgbMat = new Mat();
-        Imgproc.cvtColor(mat, rgbMat, Imgproc.COLOR_BGR2RGB);
-
-        int type = BufferedImage.TYPE_3BYTE_BGR;
-        if (rgbMat.channels() == 1) {
-            type = BufferedImage.TYPE_BYTE_GRAY;
-        }
-
-        byte[] data = new byte[(int) (rgbMat.total() * rgbMat.channels())];
-        rgbMat.get(0, 0, data);
-
-        BufferedImage image = new BufferedImage(
-            rgbMat.cols(), rgbMat.rows(), type);
-        image.getRaster().setDataElements(0, 0, rgbMat.cols(), rgbMat.rows(), data);
-
-        rgbMat.release();
-        return image;
-    }
-
-    /**
-     * 检测天体对象（星星、行星等）
-     */
-    public List<DetectedObject> detectCelestialObjects(Mat image, double threshold) {
+    public List<DetectedObject> detectCelestialObjects(BufferedImage image, double threshold) {
         List<DetectedObject> objects = new ArrayList<>();
 
-        // 转换为灰度图
-        Mat gray = new Mat();
-        Imgproc.cvtColor(image, gray, Imgproc.COLOR_BGR2GRAY);
-
-        // 高斯模糊去噪
-        Mat blurred = new Mat();
-        Imgproc.GaussianBlur(gray, blurred, new Size(5, 5), 0);
-
-        // 自适应阈值处理
-        Mat thresholded = new Mat();
-        Imgproc.adaptiveThreshold(blurred, thresholded, 255,
-            Imgproc.ADAPTIVE_THRESH_GAUSSIAN_C,
-            Imgproc.THRESH_BINARY_INV, 11, 2);
-
-        // 查找轮廓
-        List<MatOfPoint> contours = new ArrayList<>();
-        Mat hierarchy = new Mat();
-        Imgproc.findContours(thresholded, contours, hierarchy,
-            Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
-
-        // 分析轮廓
-        for (MatOfPoint contour : contours) {
-            MatOfPoint2f contour2f = new MatOfPoint2f(contour.toArray());
-            MatOfPoint2f approxCurve = new MatOfPoint2f();
-            double epsilon = 0.02 * Imgproc.arcLength(contour2f, true);
-            Imgproc.approxPolyDP(contour2f, approxCurve, epsilon, true);
-
-            double area = Imgproc.contourArea(contour);
-
-            if (area > 10) { // 过滤小噪点
-                Moments moments = Imgproc.moments(contour);
-                double cx = moments.get_m10() / moments.get_m00();
-                double cy = moments.get_m01() / moments.get_m00();
-
-                DetectedObject obj = new DetectedObject();
-                obj.x = cx;
-                obj.y = cy;
-                obj.area = area;
-                obj.brightness = getPixelBrightness(gray, (int) cx, (int) cy);
-                objects.add(obj);
-            }
+        if (image == null) {
+            return objects;
         }
 
-        gray.release();
-        blurred.release();
-        thresholded.release();
-        hierarchy.release();
+        // 转换为灰度图
+        BufferedImage grayImage = toGrayScale(image);
+
+        // 应用阈值检测
+        int width = grayImage.getWidth();
+        int height = grayImage.getHeight();
+
+        // 简单的亮度检测
+        boolean[][] visited = new boolean[height][width];
+
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                if (!visited[y][x]) {
+                    int brightness = getBrightness(grayImage, x, y);
+                    if (brightness > threshold) {
+                        // 检测到一个明亮点
+                        DetectedObject obj = new DetectedObject();
+                        obj.x = x;
+                        obj.y = y;
+                        obj.brightness = brightness;
+                        obj.area = calculateBrightArea(grayImage, x, y, threshold, visited);
+                        objects.add(obj);
+                    }
+                }
+            }
+        }
 
         logger.info("Detected {} celestial objects", objects.size());
         return objects;
     }
 
     /**
+     * 计算明亮区域面积
+     */
+    private int calculateBrightArea(BufferedImage grayImage, int startX, int startY, double threshold, boolean[][] visited) {
+        int area = 0;
+        int width = grayImage.getWidth();
+        int height = grayImage.getHeight();
+
+        // 使用简单的区域增长算法
+        for (int y = startY - 5; y <= startY + 5 && y < height; y++) {
+            for (int x = startX - 5; x <= startX + 5 && x < width; x++) {
+                if (y >= 0 && x >= 0 && !visited[y][x]) {
+                    int brightness = getBrightness(grayImage, x, y);
+                    if (brightness > threshold) {
+                        visited[y][x] = true;
+                        area++;
+                    }
+                }
+            }
+        }
+
+        return area;
+    }
+
+    /**
      * 获取像素亮度
      */
-    private static double getPixelBrightness(Mat gray, int x, int y) {
-        if (x >= 0 && x < gray.cols() && y >= 0 && y < gray.rows()) {
-            double[] pixel = gray.get(y, x);
-            return pixel[0];
+    private int getBrightness(BufferedImage image, int x, int y) {
+        if (x < 0 || x >= image.getWidth() || y < 0 || y >= image.getHeight()) {
+            return 0;
         }
-        return 0;
+        int rgb = image.getRGB(x, y);
+        return (rgb >> 16) & 0xFF; // 使用红色通道
+    }
+
+    /**
+     * 转换为灰度图
+     */
+    private BufferedImage toGrayScale(BufferedImage image) {
+        BufferedImage grayImage = new BufferedImage(
+            image.getWidth(), image.getHeight(), BufferedImage.TYPE_BYTE_GRAY);
+        Graphics2D g2d = grayImage.createGraphics();
+        g2d.drawImage(image, 0, 0, null);
+        g2d.dispose();
+        return grayImage;
     }
 
     /**
      * 增强图像（用于天文观测）
      */
-    public Mat enhanceForAstronomy(Mat image) {
-        Mat enhanced = new Mat();
+    public BufferedImage enhanceForAstronomy(BufferedImage image) {
+        if (image == null) {
+            return null;
+        }
 
-        // 转换为HSV色彩空间
-        Mat hsv = new Mat();
-        Imgproc.cvtColor(image, hsv, Imgproc.COLOR_BGR2HSV);
+        int width = image.getWidth();
+        int height = image.getHeight();
 
-        // 增加亮度通道的对比度
-        Mat[] channels = new Mat[3];
-        Core.split(hsv, channels);
+        // 创建直方图均衡化
+        BufferedImage enhanced = histogramEqualization(image);
 
-        // 直方图均衡化
-        Imgproc.equalizeHist(channels[2], channels[2]);
+        // 应用锐化
+        BufferedImage sharpened = applySharpen(enhanced);
 
-        Core.merge(channels, hsv);
-        Imgproc.cvtColor(hsv, enhanced, Imgproc.COLOR_HSV2BGR);
+        return sharpened;
+    }
 
-        // 轻微锐化
-        Mat kernel = new Mat(3, 3, CvType.CV_32F);
-        kernel.put(0, 0,
+    /**
+     * 直方图均衡化
+     */
+    private BufferedImage histogramEqualization(BufferedImage image) {
+        BufferedImage result = new BufferedImage(
+            image.getWidth(), image.getHeight(), image.getType());
+
+        int width = image.getWidth();
+        int height = image.getHeight();
+
+        // 计算直方图
+        int[] histogram = new int[256];
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                int rgb = image.getRGB(x, y);
+                int gray = (rgb >> 16) & 0xFF;
+                histogram[gray]++;
+            }
+        }
+
+        // 计算累积分布
+        int[] cdf = new int[256];
+        int sum = 0;
+        for (int i = 0; i < 256; i++) {
+            sum += histogram[i];
+            cdf[i] = sum;
+        }
+
+        // 归一化
+        int totalPixels = width * height;
+        int[] lut = new int[256];
+        for (int i = 0; i < 256; i++) {
+            lut[i] = (int) (((double) cdf[i] / totalPixels) * 255);
+        }
+
+        // 应用LUT
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                int rgb = image.getRGB(x, x);
+                int r = (rgb >> 16) & 0xFF;
+                int g = (rgb >> 8) & 0xFF;
+                int b = rgb & 0xFF;
+
+                r = lut[r];
+                g = lut[g];
+                b = lut[b];
+
+                result.setRGB(x, y, (r << 16) | (g << 8) | b);
+            }
+        }
+
+        return result;
+    }
+
+    /**
+     * 应用锐化滤镜
+     */
+    private BufferedImage applySharpen(BufferedImage image) {
+        float[] sharpenKernel = {
             0, -1, 0,
             -1, 5, -1,
             0, -1, 0
-        );
-        Imgproc.filter2D(enhanced, enhanced, -1, kernel);
+        };
 
-        hsv.release();
-        channels[0].release();
-        channels[1].release();
-        channels[2].release();
-        kernel.release();
+        return applyConvolution(image, sharpenKernel);
+    }
 
-        return enhanced;
+    /**
+     * 应用卷积滤镜
+     */
+    private BufferedImage applyConvolution(BufferedImage image, float[] kernel) {
+        int width = image.getWidth();
+        int height = image.getHeight();
+        BufferedImage result = new BufferedImage(width, height, image.getType());
+
+        int kernelSize = 3;
+        int halfKernel = kernelSize / 2;
+
+        for (int y = halfKernel; y < height - halfKernel; y++) {
+            for (int x = halfKernel; x < width - halfKernel; x++) {
+                float sumR = 0, sumG = 0, sumB = 0;
+
+                for (int ky = 0; ky < kernelSize; ky++) {
+                    for (int kx = 0; kx < kernelSize; kx++) {
+                        int pixel = image.getRGB(x + kx - halfKernel, y + ky - halfKernel);
+                        float kernelValue = kernel[ky * kernelSize + kx];
+
+                        sumR += ((pixel >> 16) & 0xFF) * kernelValue;
+                        sumG += ((pixel >> 8) & 0xFF) * kernelValue;
+                        sumB += (pixel & 0xFF) * kernelValue;
+                    }
+                }
+
+                int r = Math.min(255, Math.max(0, (int) sumR));
+                int g = Math.min(255, Math.max(0, (int) sumG));
+                int b = Math.min(255, Math.max(0, (int) sumB));
+
+                result.setRGB(x, y, (r << 16) | (g << 8) | b);
+            }
+        }
+
+        return result;
+    }
+
+    /**
+     * 调整对比度
+     */
+    public BufferedImage adjustContrast(BufferedImage image, double contrast) {
+        if (image == null) {
+            return null;
+        }
+
+        int width = image.getWidth();
+        int height = image.getHeight();
+        BufferedImage result = new BufferedImage(width, height, image.getType());
+
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                int rgb = image.getRGB(x, y);
+
+                int r = (rgb >> 16) & 0xFF;
+                int g = (rgb >> 8) & 0xFF;
+                int b = rgb & 0xFF;
+
+                r = Math.min(255, Math.max(0, (int) ((r - 128) * contrast + 128)));
+                g = Math.min(255, Math.max(0, (int) ((g - 128) * contrast + 128)));
+                b = Math.min(255, Math.max(0, (int) ((b - 128) * contrast + 128)));
+
+                result.setRGB(x, y, (r << 16) | (g << 8) | b);
+            }
+        }
+
+        return result;
+    }
+
+    /**
+     * 调整亮度
+     */
+    public BufferedImage adjustBrightness(BufferedImage image, int brightness) {
+        if (image == null) {
+            return null;
+        }
+
+        int width = image.getWidth();
+        int height = image.getHeight();
+        BufferedImage result = new BufferedImage(width, height, image.getType());
+
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                int rgb = image.getRGB(x, y);
+
+                int r = (rgb >> 16) & 0xFF;
+                int g = (rgb >> 8) & 0xFF;
+                int b = rgb & 0xFF;
+
+                r = Math.min(255, Math.max(0, r + brightness));
+                g = Math.min(255, Math.max(0, g + brightness));
+                b = Math.min(255, Math.max(0, b + brightness));
+
+                result.setRGB(x, y, (r << 16) | (g << 8) | b);
+            }
+        }
+
+        return result;
     }
 
     /**
@@ -216,24 +315,143 @@ public class ImageProcessor {
     }
 
     /**
-     * 堆叠图像（长曝光模拟）
+     * 堆叠图像（长曝光模拟）- 纯Java实现
      */
-    public Mat stackImages(List<Mat> images) {
+    public BufferedImage stackImages(List<BufferedImage> images, StackMethod method) {
         if (images == null || images.isEmpty()) {
             return null;
         }
 
-        Mat stacked = Mat.zeros(images.get(0).size(), images.get(0).type());
+        int width = images.get(0).getWidth();
+        int height = images.get(0).getHeight();
+        BufferedImage stacked = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
 
-        for (Mat image : images) {
-            Core.add(stacked, image, stacked);
+        switch (method) {
+            case AVERAGE:
+                return stackAverage(images);
+            case MEDIAN:
+                return stackMedian(images);
+            default:
+                return stackAverage(images);
+        }
+    }
+
+    /**
+     * 平均叠加
+     */
+    private BufferedImage stackAverage(List<BufferedImage> images) {
+        int width = images.get(0).getWidth();
+        int height = images.get(0).getHeight();
+        BufferedImage result = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                long sumR = 0, sumG = 0, sumB = 0;
+
+                for (BufferedImage image : images) {
+                    int rgb = image.getRGB(x, y);
+                    sumR += (rgb >> 16) & 0xFF;
+                    sumG += (rgb >> 8) & 0xFF;
+                    sumB += rgb & 0xFF;
+                }
+
+                int r = (int) (sumR / images.size());
+                int g = (int) (sumG / images.size());
+                int b = (int) (sumB / images.size());
+
+                result.setRGB(x, y, (r << 16) | (g << 8) | b);
+            }
         }
 
-        // 除以图像数量得到平均值
-        Core.divide(stacked, Scalar.all(images.size()), stacked);
+        return result;
+    }
 
-        logger.info("Stacked {} images", images.size());
-        return stacked;
+    /**
+     * 中位数叠加（去除异常值）
+     */
+    private BufferedImage stackMedian(List<BufferedImage> images) {
+        int width = images.get(0).getWidth();
+        int height = images.get(0).getHeight();
+        BufferedImage result = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                List<Integer> reds = new ArrayList<>();
+                List<Integer> greens = new ArrayList<>();
+                List<Integer> blues = new ArrayList<>();
+
+                for (BufferedImage image : images) {
+                    int rgb = image.getRGB(x, y);
+                    reds.add((rgb >> 16) & 0xFF);
+                    greens.add((rgb >> 8) & 0xFF);
+                    blues.add(rgb & 0xFF);
+                }
+
+                java.util.Collections.sort(reds);
+                java.util.Collections.sort(greens);
+                java.util.Collections.sort(blues);
+
+                int medianIndex = images.size() / 2;
+                int r = reds.get(medianIndex);
+                int g = greens.get(medianIndex);
+                int b = blues.get(medianIndex);
+
+                result.setRGB(x, y, (r << 16) | (g << 8) | b);
+            }
+        }
+
+        return result;
+    }
+
+    /**
+     * 计算图像信噪比
+     */
+    public double calculateSNR(BufferedImage image) {
+        if (image == null) {
+            return 0;
+        }
+
+        int width = image.getWidth();
+        int height = image.getHeight();
+
+        double sumSignal = 0;
+        double sumNoise = 0;
+        int count = 0;
+
+        for (int y = 1; y < height - 1; y++) {
+            for (int x = 1; x < width - 1; x++) {
+                int center = image.getRGB(x, y) & 0xFF;
+                int left = image.getRGB(x - 1, y) & 0xFF;
+                int right = image.getRGB(x + 1, y) & 0xFF;
+                int top = image.getRGB(x, y - 1) & 0xFF;
+                int bottom = image.getRGB(x, y + 1) & 0xFF;
+
+                double localMean = (center + left + right + top + bottom) / 5.0;
+                double signal = Math.abs(center - 128);
+                double noise = Math.abs(center - localMean);
+
+                sumSignal += signal;
+                sumNoise += noise;
+                count++;
+            }
+        }
+
+        double meanSignal = sumSignal / count;
+        double meanNoise = sumNoise / count;
+
+        if (meanNoise == 0) {
+            return 0;
+        }
+
+        return 20 * Math.log10(meanSignal / meanNoise);
+    }
+
+    /**
+     * 堆叠方法枚举
+     */
+    public enum StackMethod {
+        AVERAGE,
+        MEDIAN
     }
 
     /**
