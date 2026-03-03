@@ -112,7 +112,8 @@ public class OpenCVImageStacker {
         }
 
         // 除以图像数量 - 4.13.0需要创建Mat作为第二个参数
-        Mat divisorMat = new Mat(1, 1, type, new Scalar(stackedImages.size()));
+        Mat divisorMat = new Mat(1, 1, type);
+        divisorMat.setTo(new Scalar(stackedImages.size()));
         opencv_core.divide(result, divisorMat, result);
         divisorMat.release();
 
@@ -304,9 +305,9 @@ public class OpenCVImageStacker {
         warpMatrix.put(eyeMat);
         eyeMat.release();
 
-        // 使用ECC算法寻找变换 (4.13.0不支持MOTION_AFFINE)
+        // 使用ECC算法寻找变换 (4.13.0不支持MOTION_AFFINE/TRANSLATION)
         double cc = opencv_imgproc.findTransformECC(gray1, gray2, warpMatrix,
-            opencv_imgproc.MOTION_TRANSLATION,
+            0, // 0 = MOTION_TRANSLATION
             new TermCriteria(TermCriteria.EPS | TermCriteria.MAX_ITER, 50, 1e-6));
 
         gray1.release();

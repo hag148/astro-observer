@@ -33,7 +33,9 @@ public class OpenCVImageProcessor {
     static {
         // 加载OpenCV本地库
         try {
-            opencv_core.randn(new Mat(), new Scalar(), new Scalar()); // 触发本地库加载
+            Mat temp = new Mat();
+            opencv_core.randn(temp, new Scalar(0), new Scalar(1));
+            temp.release();
             logger.info("OpenCV loaded successfully");
         } catch (Exception e) {
             logger.error("Failed to load OpenCV", e);
@@ -282,7 +284,8 @@ public class OpenCVImageProcessor {
         for (int i = 0; i < 3; i++) {
             double alpha = avgMean / means[i];
             Mat scalarMat = new Mat(channels.get(i).rows(), channels.get(i).cols(), 
-                channels.get(i).type(), new Scalar(alpha, alpha, alpha));
+                channels.get(i).type());
+            scalarMat.setTo(new Scalar(alpha));
             opencv_core.multiply(channels.get(i), scalarMat, channels.get(i));
             scalarMat.release();
         }
@@ -417,9 +420,9 @@ public class OpenCVImageProcessor {
         opencv_imgproc.cvtColor(reference, gray1, opencv_imgproc.COLOR_BGR2GRAY);
         opencv_imgproc.cvtColor(target, gray2, opencv_imgproc.COLOR_BGR2GRAY);
 
-        // 寻找变换矩阵 (4.13.0不支持MOTION_AFFINE，使用MOTION_TRANSLATION)
+        // 使用ECC算法进行配准 (4.13.0不支持MOTION_AFFINE，使用MOTION_EUCLIDEAN)
         double cc = opencv_imgproc.findTransformECC(gray1, gray2, warpMatrix,
-            opencv_imgproc.MOTION_TRANSLATION, new TermCriteria(TermCriteria.EPS | TermCriteria.MAX_ITER, 50, 1e-6));
+            0, new TermCriteria(TermCriteria.EPS | TermCriteria.MAX_ITER, 50, 1e-6));
 
         if (cc < 0) {
             logger.warn("Image alignment failed");

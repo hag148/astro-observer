@@ -31,6 +31,11 @@ public class CameraManager implements WebcamListener {
             public void webcamDisconnected(WebcamEvent we) {
                 logger.info("Camera disconnected: {}", we.getSource().getName());
             }
+
+            @Override
+            public void webcamGone(WebcamEvent we) {
+                logger.info("Camera gone: {}", we.getSource().getName());
+            }
         });
     }
 
