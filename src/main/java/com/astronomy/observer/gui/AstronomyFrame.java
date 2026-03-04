@@ -1,8 +1,9 @@
 package com.astronomy.observer.gui;
 
-import com.astronomy.observer.camera.CameraManager;
+import com.astronomy.observer.camera.OpenCVCameraManager;
 import com.astronomy.observer.image.ImageProcessor;
-import com.github.sarxos.webcam.Webcam;
+import com.astronomy.observer.image.OpenCVImageProcessor;
+import org.bytedeco.opencv.opencv_core.Mat;
 
 import javax.swing.*;
 import java.awt.*;
@@ -10,17 +11,17 @@ import java.awt.event.ActionEvent;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.awt.image.BufferedImage;
-import java.io.File;
 
 public class AstronomyFrame extends JFrame {
-    private final CameraManager cameraManager;
+    private final OpenCVCameraManager cameraManager;
     private final ImageProcessor imageProcessor;
+    private final OpenCVImageProcessor openCVImageProcessor;
 
     private JLabel cameraLabel;
     private JButton startButton;
     private JButton stopButton;
     private JButton captureButton;
-    private JComboBox<Webcam> cameraComboBox;
+    private JComboBox<OpenCVCameraManager.CameraDevice> cameraComboBox;
     private JComboBox<String> resolutionComboBox;
     private JButton enhanceButton;
     private JLabel statusLabel;
@@ -30,8 +31,9 @@ public class AstronomyFrame extends JFrame {
     private boolean isEnhanced = false;
 
     public AstronomyFrame() {
-        cameraManager = new CameraManager();
+        cameraManager = new OpenCVCameraManager();
         imageProcessor = new ImageProcessor();
+        openCVImageProcessor = new OpenCVImageProcessor();
 
         initializeUI();
         loadCameras();
@@ -76,10 +78,6 @@ public class AstronomyFrame extends JFrame {
         mainPanel.add(infoPanel, BorderLayout.SOUTH);
 
         add(mainPanel);
-
-        // 定时更新摄像头画面
-        Timer timer = new Timer(33, this::updateCameraView);
-        timer.start();
     }
 
     private JToolBar createToolBar() {
@@ -152,8 +150,8 @@ public class AstronomyFrame extends JFrame {
     private void loadCameras() {
         cameraComboBox.removeAllItems();
 
-        java.util.List<Webcam> cameras = cameraManager.getAvailableCameras();
-        for (Webcam cam : cameras) {
+        java.util.List<OpenCVCameraManager.CameraDevice> cameras = cameraManager.getAvailableCameras();
+        for (OpenCVCameraManager.CameraDevice cam : cameras) {
             cameraComboBox.addItem(cam);
         }
 
@@ -162,31 +160,31 @@ public class AstronomyFrame extends JFrame {
         }
     }
 
-    private void updateResolutionList(Webcam camera) {
+    private void updateResolutionList(OpenCVCameraManager.CameraDevice camera) {
         resolutionComboBox.removeAllItems();
-        java.awt.Dimension[] sizes = camera.getCustomSizes();
+        java.util.List<java.awt.Dimension> sizes = camera.resolutions;
 
         for (java.awt.Dimension size : sizes) {
             resolutionComboBox.addItem(size.width + "x" + size.height);
         }
 
-        if (sizes.length > 0) {
-            resolutionComboBox.setSelectedIndex(sizes.length - 1);
+        if (!sizes.isEmpty()) {
+            resolutionComboBox.setSelectedIndex(sizes.size() - 1);
         }
     }
 
     private void selectCamera() {
-        Webcam selected = (Webcam) cameraComboBox.getSelectedItem();
+        OpenCVCameraManager.CameraDevice selected = (OpenCVCameraManager.CameraDevice) cameraComboBox.getSelectedItem();
         if (selected != null) {
-            cameraManager.selectCamera(selected);
+            cameraManager.selectCamera(selected.index);
             updateResolutionList(selected);
-            statusLabel.setText("状态: 已选择 " + selected.getName());
+            statusLabel.setText("状态: 已选择 " + selected.name);
         }
     }
 
     private void selectResolution() {
         String resolution = (String) resolutionComboBox.getSelectedItem();
-        if (resolution != null && cameraManager.getCurrentCamera() != null) {
+        if (resolution != null) {
             String[] parts = resolution.split("x");
             int width = Integer.parseInt(parts[0]);
             int height = Integer.parseInt(parts[1]);
@@ -195,20 +193,30 @@ public class AstronomyFrame extends JFrame {
     }
 
     private void startCamera(ActionEvent e) {
+        // 注册帧监听器
+        cameraManager.addFrameListener(frame -> {
+            currentImage = frame;
+            isEnhanced = false;
+            SwingUtilities.invokeLater(this::updateCameraLabel);
+        });
+
         if (cameraManager.startStreaming()) {
             startButton.setEnabled(false);
             stopButton.setEnabled(true);
             captureButton.setEnabled(true);
             enhanceButton.setEnabled(true);
-            statusLabel.setText("状态: 运行中");
+            Dimension res = cameraManager.getCurrentResolution();
+            statusLabel.setText("状态: 运行中 - " + res.width + "x" + res.height);
         }
     }
 
     private void stopCamera(ActionEvent e) {
+        cameraManager.removeFrameListener(null); // 移除所有监听器
         cameraManager.stopStreaming();
         startButton.setEnabled(true);
         stopButton.setEnabled(false);
         captureButton.setEnabled(false);
+        enhanceButton.setEnabled(false);
         statusLabel.setText("状态: 已停止");
     }
 
@@ -230,9 +238,9 @@ public class AstronomyFrame extends JFrame {
             SwingWorker<BufferedImage, Void> worker = new SwingWorker<>() {
                 @Override
                 protected BufferedImage doInBackground() {
-                    org.opencv.core.Mat mat = ImageProcessor.bufferedImageToMat(currentImage);
-                    org.opencv.core.Mat enhanced = imageProcessor.enhanceForAstronomy(mat);
-                    BufferedImage result = ImageProcessor.matToBufferedImage(enhanced);
+                    Mat mat = OpenCVImageProcessor.bufferedImageToMat(currentImage);
+                    Mat enhanced = openCVImageProcessor.enhanceForAstronomy(mat);
+                    BufferedImage result = OpenCVImageProcessor.matToBufferedImage(enhanced);
                     mat.release();
                     enhanced.release();
                     return result;
@@ -262,9 +270,9 @@ public class AstronomyFrame extends JFrame {
                 protected Void doInBackground() {
                     statusLabel.setText("状态: 正在检测天体...");
 
-                    org.opencv.core.Mat mat = ImageProcessor.bufferedImageToMat(currentImage);
-                    java.util.List<ImageProcessor.DetectedObject> objects =
-                        imageProcessor.detectCelestialObjects(mat, 50);
+                    Mat mat = OpenCVImageProcessor.bufferedImageToMat(currentImage);
+                    java.util.List<OpenCVImageProcessor.DetectedObject> objects =
+                        openCVImageProcessor.detectCelestialObjects(mat, 50);
                     mat.release();
 
                     publish(objects.size());
@@ -284,16 +292,6 @@ public class AstronomyFrame extends JFrame {
                 }
             };
             worker.execute();
-        }
-    }
-
-    private void updateCameraView(ActionEvent e) {
-        if (cameraManager.isStreaming()) {
-            currentImage = cameraManager.captureFrame();
-            if (currentImage != null) {
-                isEnhanced = false;
-                updateCameraLabel();
-            }
         }
     }
 

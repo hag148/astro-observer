@@ -1,6 +1,7 @@
 package com.astronomy.observer.camera;
 
 import com.github.sarxos.webcam.Webcam;
+import com.github.sarxos.webcam.WebcamDiscoveryEvent;
 import com.github.sarxos.webcam.WebcamDiscoveryListener;
 import com.github.sarxos.webcam.WebcamEvent;
 import com.github.sarxos.webcam.WebcamListener;
@@ -23,18 +24,18 @@ public class CameraManager implements WebcamListener {
     public CameraManager() {
         Webcam.addDiscoveryListener(new WebcamDiscoveryListener() {
             @Override
-            public void webcamFound(WebcamEvent we) {
-                logger.info("Camera discovered: {}", we.getSource().getName());
+            public void webcamFound(WebcamDiscoveryEvent we) {
+                logger.info("Camera discovery event");
             }
 
-            @Override
-            public void webcamDisconnected(WebcamEvent we) {
-                logger.info("Camera disconnected: {}", we.getSource().getName());
+            public void webcamDisconnected(WebcamDiscoveryEvent we) {
+                logger.info("Camera disconnected event");
             }
 
+
             @Override
-            public void webcamGone(WebcamEvent we) {
-                logger.info("Camera gone: {}", we.getSource().getName());
+            public void webcamGone(WebcamDiscoveryEvent we) {
+                logger.info("Camera gone event");
             }
         });
     }
@@ -76,12 +77,47 @@ public class CameraManager implements WebcamListener {
         }
 
         try {
-            currentCamera.open(true);
+            // 关闭如果已经打开
+            if (currentCamera.isOpen()) {
+                currentCamera.close();
+                Thread.sleep(100); // 等待关闭完成
+            }
+
+            // 获取支持的分辨率
+            Dimension[] sizes = currentCamera.getViewSizes();
+            logger.info("Available resolutions: {}",
+                java.util.Arrays.toString(sizes));
+
+            // 使用 VGA 分辨率作为默认（最兼容）
+            Dimension targetSize = new Dimension(640, 480);
+            for (Dimension size : sizes) {
+                if (size.width == 640 && size.height == 480) {
+                    targetSize = size;
+                    break;
+                }
+            }
+            // 如果没有 VGA，使用第一个可用的
+            if (targetSize == null && sizes.length > 0) {
+                targetSize = sizes[0];
+            }
+
+            if (targetSize != null) {
+                currentCamera.setViewSize(targetSize);
+                logger.info("Setting resolution to: {}x{}", targetSize.width, targetSize.height);
+            }
+
+            // 使用同步模式打开
+            logger.info("Opening camera: {}", currentCamera.getName());
+            currentCamera.open(false);
             isStreaming.set(true);
-            logger.info("Camera streaming started: {}", currentCamera.getName());
+            logger.info("Camera streaming started: {} at {}x{}",
+                currentCamera.getName(),
+                currentCamera.getViewSize().width,
+                currentCamera.getViewSize().height);
             return true;
         } catch (Exception e) {
             logger.error("Failed to start camera streaming", e);
+            isStreaming.set(false);
             return false;
         }
     }
