@@ -114,18 +114,46 @@ public class OpenCVImageProcessor {
     }
 
     /**
-     * 检测天体对象（星星、行星等）
+     * 检测天体对象（星星、行星等）- 检测整个图像
      */
     public List<DetectedObject> detectCelestialObjects(Mat image, double threshold) {
+        return detectCelestialObjects(image, threshold, null, null);
+    }
+
+    /**
+     * 检测天体对象（星星、行星等）- 支持指定检测区域
+     *
+     * @param image 源图像
+     * @param threshold 阈值
+     * @param region 检测区域（如果为null则检测整个图像）
+     * @param offset 检测区域相对于原图的偏移（如果region不为null则必须提供）
+     */
+    public List<DetectedObject> detectCelestialObjects(Mat image, double threshold, Rect region, Point offset) {
         List<DetectedObject> objects = new ArrayList<>();
 
         if (image == null || image.empty()) {
             return objects;
         }
 
+        Mat detectionImage;
+        Point detectionOffset;
+
+        // 确定检测图像和偏移
+        if (region != null && offset != null) {
+            // 裁剪指定区域
+            detectionImage = new Mat(image, region);
+            detectionOffset = offset;
+            logger.info("Detecting in region: x={}, y={}, w={}, h}, offset: ({}, {})",
+                region.x(), region.y(), region.width(), region.height(), offset.x(), offset.y());
+        } else {
+            // 使用整个图像
+            detectionImage = image.clone();
+            detectionOffset = new Point(0, 0);
+        }
+
         // 转换为灰度图
         Mat gray = new Mat();
-        opencv_imgproc.cvtColor(image, gray, opencv_imgproc.COLOR_BGR2GRAY);
+        opencv_imgproc.cvtColor(detectionImage, gray, opencv_imgproc.COLOR_BGR2GRAY);
 
         // 高斯模糊去噪
         Mat blurred = new Mat();
@@ -155,8 +183,9 @@ public class OpenCVImageProcessor {
                 double cy = moments.m01() / moments.m00();
 
                 DetectedObject obj = new DetectedObject();
-                obj.x = cx;
-                obj.y = cy;
+                // 加上偏移量，得到原图中的坐标
+                obj.x = cx + detectionOffset.x();
+                obj.y = cy + detectionOffset.y();
                 obj.area = area;
                 obj.brightness = getPixelBrightness(gray, (int) cx, (int) cy);
                 objects.add(obj);
@@ -171,7 +200,12 @@ public class OpenCVImageProcessor {
         thresholded.release();
         hierarchy.release();
 
-        logger.info("Detected {} celestial objects", objects.size());
+        // 如果裁剪了区域，释放检测图像
+        if (region != null && offset != null) {
+            detectionImage.release();
+        }
+
+        logger.info("Detected {} celestial objects in region", objects.size());
         return objects;
     }
 

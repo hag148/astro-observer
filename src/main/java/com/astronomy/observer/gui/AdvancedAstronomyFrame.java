@@ -2,16 +2,15 @@ package com.astronomy.observer.gui;
 
 import com.astronomy.observer.camera.OpenCVCameraManager;
 import com.astronomy.observer.config.UGreenCameraConfig;
-import com.astronomy.observer.image.ImageProcessor;
 import com.astronomy.observer.image.OpenCVImageProcessor;
 import com.astronomy.observer.image.OpenCVImageStacker;
+import com.astronomy.observer.image.AstronomyImageEnhancer;
 import com.astronomy.observer.model.ObservationSession;
 import org.bytedeco.opencv.opencv_core.Mat;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.swing.*;
-import javax.swing.border.Border;
 import javax.swing.border.TitledBorder;
 import javax.swing.table.DefaultTableModel;
 import java.awt.*;
@@ -21,6 +20,7 @@ import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.awt.geom.AffineTransform;
 import java.awt.image.BufferedImage;
+import java.io.File;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -30,13 +30,12 @@ import java.time.format.DateTimeFormatter;
  */
 public class AdvancedAstronomyFrame extends JFrame {
     private static final Logger logger = LoggerFactory.getLogger(AdvancedAstronomyFrame.class);
-    private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm:ss");
 
     private final OpenCVCameraManager cameraManager;
-    private final ImageProcessor imageProcessor;
     private final OpenCVImageProcessor openCVImageProcessor;
     private final OpenCVImageStacker openCVImageStacker;
     private final ObservationSession observationSession;
+    private final AstronomyImageEnhancer imageEnhancer;
 
     // 组件 - 视图区域
     private JLabel cameraLabel;
@@ -53,7 +52,6 @@ public class AdvancedAstronomyFrame extends JFrame {
     private JButton stopButton;
     private JButton captureButton;
     private JButton stackButton;
-    private JButton enhanceButton;
     private JButton detectButton;
     private JButton exportButton;
     private JButton resetZoomButton;
@@ -67,6 +65,10 @@ public class AdvancedAstronomyFrame extends JFrame {
     private JSpinner exposureSpinner;
     private JSpinner gainSpinner;
     private JSpinner focusSpinner;
+
+    // 组件 - 图像增强
+    private JComboBox<AstronomyImageEnhancer.EnhancementAlgorithm> enhancementAlgorithmComboBox;
+    private JCheckBox useGPUCheckBox;
 
     // 组件 - 会话管理
     private JButton newSessionButton;
@@ -94,15 +96,13 @@ public class AdvancedAstronomyFrame extends JFrame {
     private JLabel stackQualityLabel;
 
     private BufferedImage currentImage;
-    private boolean isEnhanced = false;
     private int capturedCount = 0;
-    private long startTime = 0;
 
     // 缩放控制 - 类似地图交互
     private double zoomLevel = 1.0;
     private Point viewOffset = new Point(0, 0); // 视图偏移（像素）
     private final double MIN_ZOOM = 1.0;
-    private final double MAX_ZOOM = 10.0;
+    private final double MAX_ZOOM = 100.0;
     private final double ZOOM_FACTOR = 1.1; // 每次滚轮缩放10%
 
     // 拖拽相关
@@ -113,10 +113,10 @@ public class AdvancedAstronomyFrame extends JFrame {
 
     public AdvancedAstronomyFrame() {
         cameraManager = new OpenCVCameraManager();
-        imageProcessor = new ImageProcessor();
         openCVImageProcessor = new OpenCVImageProcessor();
         openCVImageStacker = new OpenCVImageStacker(100);
         observationSession = new ObservationSession();
+        imageEnhancer = new AstronomyImageEnhancer();
 
         initializeUI();
         loadCameras();
@@ -233,16 +233,24 @@ public class AdvancedAstronomyFrame extends JFrame {
         JPanel rightPanel = new JPanel(new BorderLayout(5, 5));
 
         JSplitPane rightSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT);
-        rightSplit.setResizeWeight(0.5);
-        rightSplit.setDividerLocation(400);
+        rightSplit.setResizeWeight(0.4);
+        rightSplit.setDividerLocation(450);
 
         // 上部：参数控制
         JPanel paramsPanel = createParametersPanel();
         rightSplit.setTopComponent(paramsPanel);
 
-        // 下部：信息显示
-        JPanel infoPanel = createInfoPanel();
-        rightSplit.setBottomComponent(infoPanel);
+        // 中部：图像增强控制
+        JPanel enhancementPanel = createEnhancementPanel();
+        JSplitPane middleSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT);
+        middleSplit.setResizeWeight(0.5);
+        middleSplit.setDividerLocation(200);
+
+        JPanel bottomSplit = new JPanel(new BorderLayout(5, 5));
+        bottomSplit.add(enhancementPanel, BorderLayout.NORTH);
+        bottomSplit.add(createInfoPanel(), BorderLayout.CENTER);
+
+        rightSplit.setBottomComponent(bottomSplit);
 
         rightPanel.add(rightSplit, BorderLayout.CENTER);
 
@@ -356,33 +364,27 @@ public class AdvancedAstronomyFrame extends JFrame {
 
         captureButton = createActionButton("截图", Color.BLUE);
         stackButton = createActionButton("图像叠加", new Color(128, 0, 128)); // 紫色
-        enhanceButton = createActionButton("图像增强", Color.ORANGE);
         detectButton = createActionButton("检测天体", Color.RED);
         exportButton = createActionButton("导出图像", Color.CYAN);
         resetZoomButton = createActionButton("重置缩放", new Color(100, 100, 100));
 
         captureButton.setEnabled(false);
         stackButton.setEnabled(false);
-        enhanceButton.setEnabled(false);
         detectButton.setEnabled(false);
         exportButton.setEnabled(false);
         resetZoomButton.setEnabled(false);
 
         panel.add(captureButton);
         panel.add(stackButton);
-        panel.add(enhanceButton);
         panel.add(detectButton);
         panel.add(exportButton);
         panel.add(resetZoomButton);
 
         captureButton.addActionListener(this::captureImage);
         stackButton.addActionListener(this::stackImages);
-        enhanceButton.addActionListener(this::enhanceImage);
         detectButton.addActionListener(this::detectObjects);
         exportButton.addActionListener(this::exportImage);
         resetZoomButton.addActionListener(this::resetZoom);
-        detectButton.addActionListener(this::detectObjects);
-        exportButton.addActionListener(this::exportImage);
 
         return panel;
     }
@@ -433,6 +435,193 @@ public class AdvancedAstronomyFrame extends JFrame {
         syncSpinnerSlider(contrastSpinner, contrastSlider);
 
         return panel;
+    }
+
+    /**
+     * 创建图像增强控制面板
+     */
+    private JPanel createEnhancementPanel() {
+        JPanel panel = new JPanel(new BorderLayout(5, 5));
+        panel.setBorder(createTitledBorder("图像增强控制", new Color(255, 140, 0)));
+
+        // 增强算法选择
+        JPanel algorithmPanel = new JPanel(new BorderLayout(5, 5));
+        algorithmPanel.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5));
+
+        JPanel labelPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+        labelPanel.add(new JLabel("增强算法:"));
+        algorithmPanel.add(labelPanel, BorderLayout.WEST);
+
+        // 创建增强算法下拉框
+        enhancementAlgorithmComboBox = new JComboBox<>(AstronomyImageEnhancer.EnhancementAlgorithm.values());
+        enhancementAlgorithmComboBox.setFont(new Font("Microsoft YaHei", Font.PLAIN, 11));
+        enhancementAlgorithmComboBox.setToolTipText("选择图像增强算法");
+        algorithmPanel.add(enhancementAlgorithmComboBox, BorderLayout.CENTER);
+
+        // GPU选项
+        useGPUCheckBox = new JCheckBox("使用GPU加速（需要CUDA支持）");
+        useGPUCheckBox.setEnabled(false); // 暂时禁用，需要添加GPU支持
+        useGPUCheckBox.setToolTipText("使用CUDA GPU加速（需要NVIDIA GPU和CUDA）");
+        algorithmPanel.add(useGPUCheckBox, BorderLayout.SOUTH);
+
+        panel.add(algorithmPanel, BorderLayout.NORTH);
+
+        // 算法说明
+        JTextArea descriptionArea = new JTextArea(3, 30);
+        descriptionArea.setEditable(false);
+        descriptionArea.setFont(new Font("Microsoft YaHei", Font.PLAIN, 10));
+        descriptionArea.setBackground(new Color(245, 245, 245));
+        descriptionArea.setText(getAlgorithmDescription(AstronomyImageEnhancer.EnhancementAlgorithm.BASIC));
+        descriptionArea.setLineWrap(true);
+        descriptionArea.setWrapStyleWord(true);
+
+        enhancementAlgorithmComboBox.addActionListener(e -> {
+            AstronomyImageEnhancer.EnhancementAlgorithm selected =
+                (AstronomyImageEnhancer.EnhancementAlgorithm) enhancementAlgorithmComboBox.getSelectedItem();
+            descriptionArea.setText(getAlgorithmDescription(selected));
+        });
+
+        panel.add(new JScrollPane(descriptionArea), BorderLayout.CENTER);
+
+        // 快捷增强按钮
+        JPanel buttonPanel = new JPanel(new GridLayout(1, 4, 5, 5));
+        buttonPanel.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5));
+
+        JButton enhanceStarsButton = new JButton("星点增强");
+        enhanceStarsButton.setToolTipText("专门增强星星");
+        enhanceStarsButton.addActionListener(e -> enhanceForTarget("stars"));
+
+        JButton enhanceDeepSkyButton = new JButton("深空增强");
+        enhanceDeepSkyButton.setToolTipText("专门增强星云、星系");
+        enhanceDeepSkyButton.addActionListener(e -> enhanceForTarget("deepsky"));
+
+        JButton enhancePlanetaryButton = new JButton("行星增强");
+        enhancePlanetaryButton.setToolTipText("专门增强行星、月球");
+        enhancePlanetaryButton.addActionListener(e -> enhanceForTarget("planetary"));
+
+        JButton enhanceButton = new JButton("应用增强");
+        enhanceButton.setToolTipText("应用选择的增强算法");
+        enhanceButton.addActionListener(e -> applyEnhancement());
+
+        buttonPanel.add(enhanceStarsButton);
+        buttonPanel.add(enhanceDeepSkyButton);
+        buttonPanel.add(enhancePlanetaryButton);
+        buttonPanel.add(enhanceButton);
+
+        panel.add(buttonPanel, BorderLayout.SOUTH);
+
+        return panel;
+    }
+
+    /**
+     * 获取算法说明
+     */
+    private String getAlgorithmDescription(AstronomyImageEnhancer.EnhancementAlgorithm algorithm) {
+        switch (algorithm) {
+            case BASIC:
+                return "基础增强：直方图均衡化 + 锐化。适合一般天文图像，提高对比度和细节。";
+            case CLAHE:
+                return "CLAHE：自适应直方图均衡化。保留局部细节，适合增强低对比度区域。";
+            case UNSHARP_MASK:
+                return "反锐化掩码：增强边缘和细节，适合星点增强，减少模糊。";
+            case MORPHOLOGY:
+                return "形态学增强：突出亮点，连接断裂星点，适合星点检测。";
+            case DENOISE:
+                return "降噪增强：双边滤波保留边缘同时降噪，适合高增益图像。";
+            case LUCY_RICHARDSON:
+                return "Lucy-Richardson：反卷积恢复模糊，适合大气模糊图像。";
+            case STRETCHING:
+                return "线性拉伸：扩展动态范围，适合深空天体。";
+            case GAMMA_CORRECTION:
+                return "Gamma校正：调整亮度和对比度，gamma>1变暗，<1变亮。";
+            case COMBINED:
+                return "综合增强：组合降噪、CLAHE、锐化、形态学和Gamma，效果最佳。";
+            default:
+                return "未知算法";
+        }
+    }
+
+    /**
+     * 为特定目标增强
+     */
+    private void enhanceForTarget(String target) {
+        if (currentImage == null) {
+            JOptionPane.showMessageDialog(this,
+                "请先捕获或加载图像",
+                "提示",
+                JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+
+        Mat imageMat = OpenCVImageProcessor.bufferedImageToMat(currentImage);
+        Mat enhanced = null;
+
+        try {
+            switch (target) {
+                case "stars":
+                    enhanced = imageEnhancer.enhanceStars(imageMat);
+                    statusLabel.setText("已应用星点增强");
+                    break;
+                case "deepsky":
+                    enhanced = imageEnhancer.enhanceDeepSky(imageMat);
+                    statusLabel.setText("已应用深空天体增强");
+                    break;
+                case "planetary":
+                    enhanced = imageEnhancer.enhancePlanetary(imageMat);
+                    statusLabel.setText("已应用行星表面增强");
+                    break;
+            }
+
+            if (enhanced != null) {
+                currentImage = OpenCVImageProcessor.matToBufferedImage(enhanced);
+                updateCameraLabel();
+                enhanced.release();
+            }
+        } finally {
+            imageMat.release();
+        }
+    }
+
+    /**
+     * 应用选择的增强算法
+     */
+    private void applyEnhancement() {
+        if (currentImage == null) {
+            JOptionPane.showMessageDialog(this,
+                "请先捕获或加载图像",
+                "提示",
+                JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+
+        AstronomyImageEnhancer.EnhancementAlgorithm selected =
+            (AstronomyImageEnhancer.EnhancementAlgorithm) enhancementAlgorithmComboBox.getSelectedItem();
+        boolean useGPU = useGPUCheckBox.isSelected();
+
+        if (useGPU) {
+            statusLabel.setText("警告：GPU加速暂未实现，使用CPU处理");
+        }
+
+        Mat imageMat = OpenCVImageProcessor.bufferedImageToMat(currentImage);
+        Mat enhanced = null;
+
+        try {
+            long startTime = System.currentTimeMillis();
+            enhanced = imageEnhancer.enhance(imageMat, selected);
+            long processingTime = System.currentTimeMillis() - startTime;
+
+            if (enhanced != null) {
+                currentImage = OpenCVImageProcessor.matToBufferedImage(enhanced);
+                updateCameraLabel();
+                statusLabel.setText(String.format("应用%s增强，耗时: %dms",
+                    selected.getDescription(), processingTime));
+            }
+        } finally {
+            imageMat.release();
+            if (enhanced != null) {
+                enhanced.release();
+            }
+        }
     }
 
     /**
@@ -773,14 +962,13 @@ public class AdvancedAstronomyFrame extends JFrame {
             }
         });
 
+
         // E键：增强
         inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_E, 0), "enhance");
         actionMap.put("enhance", new AbstractAction() {
             @Override
             public void actionPerformed(ActionEvent e) {
-                if (enhanceButton.isEnabled()) {
-                    enhanceButton.doClick();
-                }
+                applyEnhancement();
             }
         });
 
@@ -835,16 +1023,6 @@ public class AdvancedAstronomyFrame extends JFrame {
         }
     }
 
-    private void selectResolution() {
-        String resolution = (String) resolutionComboBox.getSelectedItem();
-        if (resolution != null) {
-            String[] parts = resolution.split("x");
-            int width = Integer.parseInt(parts[0]);
-            int height = Integer.parseInt(parts[1]);
-            cameraManager.setResolution(width, height);
-        }
-    }
-
     private void applyPreset() {
         UGreenCameraConfig.AstronomyPreset preset =
             (UGreenCameraConfig.AstronomyPreset) presetComboBox.getSelectedItem();
@@ -865,7 +1043,6 @@ public class AdvancedAstronomyFrame extends JFrame {
         // 注册帧监听器
         cameraManager.addFrameListener(frame -> {
             currentImage = frame;
-            isEnhanced = false;
             updateFPS();
             SwingUtilities.invokeLater(() -> {
                 updateCameraLabel();
@@ -878,13 +1055,11 @@ public class AdvancedAstronomyFrame extends JFrame {
             stopButton.setEnabled(true);
             captureButton.setEnabled(true);
             stackButton.setEnabled(true);
-            enhanceButton.setEnabled(true);
             detectButton.setEnabled(true);
             exportButton.setEnabled(true);
             resetZoomButton.setEnabled(true);
 
             observationSession.setStartTime(LocalDateTime.now());
-            startTime = System.currentTimeMillis();
             updateSessionInfo();
             updateObservationStatus("观测中");
 
@@ -899,7 +1074,6 @@ public class AdvancedAstronomyFrame extends JFrame {
         stopButton.setEnabled(false);
         captureButton.setEnabled(false);
         stackButton.setEnabled(false);
-        enhanceButton.setEnabled(false);
         detectButton.setEnabled(false);
         exportButton.setEnabled(false);
         resetZoomButton.setEnabled(false);
@@ -915,10 +1089,27 @@ public class AdvancedAstronomyFrame extends JFrame {
             SwingWorker<Boolean, Void> worker = new SwingWorker<>() {
                 @Override
                 protected Boolean doInBackground() {
-                    String prefix = String.format("%s_%s_",
-                        targetNameField.getText().isEmpty() ? "capture" : targetNameField.getText(),
-                        observationSession.getId());
-                    return imageProcessor.saveImage(currentImage, "captures", prefix);
+                    try {
+                        String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
+                        String prefix = String.format("%s_%s_",
+                            targetNameField.getText().isEmpty() ? "capture" : targetNameField.getText(),
+                            observationSession.getId());
+                        String filename = String.format("%s%s.png", prefix, timestamp);
+
+                        File dir = new File("captures");
+                        if (!dir.exists()) {
+                            dir.mkdirs();
+                        }
+
+                        File outputFile = new File(dir, filename);
+                        javax.imageio.ImageIO.write(currentImage, "PNG", outputFile);
+
+                        logger.info("Image saved to: {}", outputFile.getAbsolutePath());
+                        return true;
+                    } catch (Exception e) {
+                        logger.error("Failed to save image", e);
+                        return false;
+                    }
                 }
 
                 @Override
@@ -966,7 +1157,6 @@ public class AdvancedAstronomyFrame extends JFrame {
                     BufferedImage result = get();
                     if (result != null) {
                         currentImage = result;
-                        isEnhanced = true;
                         updateCameraLabel();
                         statusLabel.setText("图像堆叠完成 - 共 " + openCVImageStacker.getStackSize() + " 张");
                         stackQualityLabel.setText("质量: 高");
@@ -981,44 +1171,52 @@ public class AdvancedAstronomyFrame extends JFrame {
         statusLabel.setText("正在堆叠图像...");
     }
 
-    private void enhanceImage(ActionEvent e) {
-        if (currentImage != null) {
-            SwingWorker<BufferedImage, Void> worker = new SwingWorker<>() {
-                @Override
-                protected BufferedImage doInBackground() {
-                    Mat mat = OpenCVImageProcessor.bufferedImageToMat(currentImage);
-                    Mat enhanced = openCVImageProcessor.enhanceForAstronomy(mat);
-                    BufferedImage result = OpenCVImageProcessor.matToBufferedImage(enhanced);
-                    mat.release();
-                    enhanced.release();
-                    return result;
-                }
-
-                @Override
-                protected void done() {
-                    try {
-                        currentImage = get();
-                        isEnhanced = true;
-                        updateCameraLabel();
-                        statusLabel.setText("图像已增强");
-                    } catch (Exception ex) {
-                        logger.error("图像增强失败", ex);
-                        statusLabel.setText("增强失败");
-                    }
-                }
-            };
-            worker.execute();
-            statusLabel.setText("正在增强图像...");
-        }
-    }
-
     private void detectObjects(ActionEvent e) {
         if (currentImage != null) {
             SwingWorker<Integer, Void> worker = new SwingWorker<>() {
                 @Override
                 protected Integer doInBackground() {
                     Mat mat = OpenCVImageProcessor.bufferedImageToMat(currentImage);
-                    detectedObjects = openCVImageProcessor.detectCelestialObjects(mat, 50);
+
+                    // 计算当前可见区域（基于缩放和偏移）
+                    int labelWidth = cameraLabel.getWidth();
+                    int labelHeight = cameraLabel.getHeight();
+
+                    if (labelWidth > 0 && labelHeight > 0) {
+                        // 基础缩放比例（适应窗口）
+                        double baseScale = Math.min(
+                            (double) labelWidth / currentImage.getWidth(),
+                            (double) labelHeight / currentImage.getHeight()
+                        );
+                        double finalScale = baseScale * zoomLevel;
+
+                        // 计算可见区域在原图中的坐标
+                        int viewX = (int) ((-viewOffset.x) + (labelWidth / finalScale - currentImage.getWidth()) / 2);
+                        int viewY = (int) ((-viewOffset.y) + (labelHeight / finalScale - currentImage.getHeight()) / 2);
+                        int viewW = (int) (labelWidth / finalScale);
+                        int viewH = (int) (labelHeight / finalScale);
+
+                        // 限制在图像范围内
+                        viewX = Math.max(0, Math.min(viewX, mat.cols() - 1));
+                        viewY = Math.max(0, Math.min(viewY, mat.rows() - 1));
+                        viewW = Math.min(viewW, mat.cols() - viewX);
+                        viewH = Math.min(viewH, mat.rows() - viewY);
+
+                        if (viewW > 0 && viewH > 0) {
+                            // 创建检测区域
+                            org.bytedeco.opencv.opencv_core.Rect region = new org.bytedeco.opencv.opencv_core.Rect(viewX, viewY, viewW, viewH);
+                            org.bytedeco.opencv.opencv_core.Point offset = new org.bytedeco.opencv.opencv_core.Point(viewX, viewY);
+
+                            // 只在可见区域检测天体
+                            detectedObjects = openCVImageProcessor.detectCelestialObjects(mat, 50, region, offset);
+                            statusLabel.setText(String.format("在可见区域(%d,%d,%d,%d)检测天体", viewX, viewY, viewW, viewH));
+                        } else {
+                            detectedObjects = openCVImageProcessor.detectCelestialObjects(mat, 50);
+                        }
+                    } else {
+                        detectedObjects = openCVImageProcessor.detectCelestialObjects(mat, 50);
+                    }
+
                     mat.release();
 
                     // 更新表格
@@ -1044,6 +1242,7 @@ public class AdvancedAstronomyFrame extends JFrame {
                     try {
                         int count = get();
                         selectedObjectIndex = -1;
+                        updateCameraLabel(); // 更新显示以显示新的检测框
                         statusLabel.setText(String.format("检测到 %d 个天体", count));
                     } catch (Exception ex) {
                         logger.error("天体检测失败", ex);
@@ -1395,47 +1594,86 @@ public class AdvancedAstronomyFrame extends JFrame {
                 // 恢复原始变换
                 g2d.setTransform(originalTransform);
 
-                // 如果有选中的天体，绘制标识
-                if (selectedObjectIndex >= 0 && detectedObjects != null &&
-                    selectedObjectIndex < detectedObjects.size()) {
-                    OpenCVImageProcessor.DetectedObject obj = detectedObjects.get(selectedObjectIndex);
+                // 如果有检测到的天体，绘制所有天体标识
+                if (detectedObjects != null && !detectedObjects.isEmpty()) {
+                    // 先绘制所有检测到的天体（绿色小圈）
+                    for (int i = 0; i < detectedObjects.size(); i++) {
+                        OpenCVImageProcessor.DetectedObject obj = detectedObjects.get(i);
 
-                    // 计算天体在屏幕中的位置
-                    double objDisplayX = (obj.x - viewOffset.x) * finalScale + (labelWidth - currentImage.getWidth() * finalScale) / 2;
-                    double objDisplayY = (obj.y - viewOffset.y) * finalScale + (labelHeight - currentImage.getHeight() * finalScale) / 2;
+                        // 计算天体在屏幕中的位置（正确应用缩放和偏移）
+                        // 先将图像坐标转换到缩放后的空间
+                        double scaledX = (obj.x - viewOffset.x) * finalScale;
+                        double scaledY = (obj.y - viewOffset.y) * finalScale;
 
-                    // 检查是否在可见范围内
-                    int displayX = (int) objDisplayX;
-                    int displayY = (int) objDisplayY;
+                        // 再加上居中偏移（因为图像是居中显示的）
+                        double displayX = scaledX + (labelWidth - currentImage.getWidth() * finalScale) / 2;
+                        double displayY = scaledY + (labelHeight - currentImage.getHeight() * finalScale) / 2;
 
-                    if (displayX > -100 && displayX < labelWidth + 100 &&
-                        displayY > -100 && displayY < labelHeight + 100) {
+                        // 检查是否在可见范围内
+                        if (displayX > -100 && displayX < labelWidth + 100 &&
+                            displayY > -100 && displayY < labelHeight + 100) {
 
-                        // 计算圆的半径（基于面积）
-                        double radius = Math.sqrt(obj.area) * finalScale / 2;
+                            // 计算圆的半径（基于面积，并应用缩放）
+                            double radius = Math.sqrt(obj.area) * finalScale / 2;
+                            int markerSize = Math.max(5, (int) (5 * zoomLevel));
 
-                        // 绘制圆圈标识
-                        g2d.setColor(Color.YELLOW);
-                        g2d.setStroke(new java.awt.BasicStroke(2));
-                        g2d.drawOval(
-                            (int) (displayX - radius),
-                            (int) (displayY - radius),
-                            (int) (radius * 2),
-                            (int) (radius * 2)
-                        );
+                            // 绘制绿色小圈标记所有检测到的天体
+                            g2d.setColor(new Color(0, 255, 0, 150));
+                            g2d.setStroke(new java.awt.BasicStroke(1));
+                            g2d.drawOval((int) displayX - markerSize, (int) displayY - markerSize,
+                                         markerSize * 2, markerSize * 2);
+                        }
+                    }
 
-                        // 绘制十字准星
-                        g2d.setColor(Color.RED);
-                        g2d.setStroke(new java.awt.BasicStroke(1));
-                        int crossSize = (int) (10 * zoomLevel);
-                        g2d.drawLine(displayX - crossSize, displayY, displayX + crossSize, displayY);
-                        g2d.drawLine(displayX, displayY - crossSize, displayX, displayY + crossSize);
+                    // 如果有选中的天体，绘制详细标识（黄色大圈 + 十字准星 + 信息）
+                    if (selectedObjectIndex >= 0 && selectedObjectIndex < detectedObjects.size()) {
+                        OpenCVImageProcessor.DetectedObject obj = detectedObjects.get(selectedObjectIndex);
 
-                        // 绘制标签
-                        g2d.setFont(new Font("Microsoft YaHei", Font.BOLD, 12));
-                        g2d.setColor(Color.GREEN);
-                        String label = String.format("天体 #%d", selectedObjectIndex + 1);
-                        g2d.drawString(label, displayX + (int) radius + 5, displayY - 5);
+                        // 计算天体在屏幕中的位置
+                        double scaledX = (obj.x - viewOffset.x) * finalScale;
+                        double scaledY = (obj.y - viewOffset.y) * finalScale;
+                        double displayX = scaledX + (labelWidth - currentImage.getWidth() * finalScale) / 2;
+                        double displayY = scaledY + (labelHeight - currentImage.getHeight() * finalScale) / 2;
+
+                        if (displayX > -100 && displayX < labelWidth + 100 &&
+                            displayY > -100 && displayY < labelHeight + 100) {
+
+                            // 计算圆的半径（基于面积，并应用缩放）
+                            double radius = Math.sqrt(obj.area) * finalScale / 2;
+
+                            // 绘制黄色圆圈标识
+                            g2d.setColor(Color.YELLOW);
+                            g2d.setStroke(new java.awt.BasicStroke(2));
+                            g2d.drawOval(
+                                (int) (displayX - radius),
+                                (int) (displayY - radius),
+                                (int) (radius * 2),
+                                (int) (radius * 2)
+                            );
+
+                            // 绘制十字准星（大小随缩放调整）
+                            g2d.setColor(Color.RED);
+                            g2d.setStroke(new java.awt.BasicStroke(1));
+                            int crossSize = Math.max(10, (int) (10 * zoomLevel));
+                            g2d.drawLine((int) displayX - crossSize, (int) displayY, (int) displayX + crossSize, (int) displayY);
+                            g2d.drawLine((int) displayX, (int) displayY - crossSize, (int) displayX, (int) displayY + crossSize);
+
+                            // 绘制标签
+                            g2d.setFont(new Font("Microsoft YaHei", Font.BOLD, Math.max(12, (int) (12 * zoomLevel))));
+                            g2d.setColor(Color.GREEN);
+                            String label = String.format("天体 #%d", selectedObjectIndex + 1);
+                            FontMetrics fm = g2d.getFontMetrics();
+                            g2d.drawString(label, (int) displayX + (int) radius + 5, (int) displayY - 5);
+
+                            // 绘制天体信息背景框
+                            String infoText = String.format("X:%.1f Y:%.1f 亮:%.1f", obj.x, obj.y, obj.brightness);
+                            int infoWidth = fm.stringWidth(infoText) + 10;
+                            int infoHeight = fm.getHeight() + 4;
+                            g2d.setColor(new Color(0, 0, 0, 180));
+                            g2d.fillRect((int) displayX + (int) radius + 5, (int) displayY + 8, infoWidth, infoHeight);
+                            g2d.setColor(Color.WHITE);
+                            g2d.drawString(infoText, (int) displayX + (int) radius + 10, (int) displayY + fm.getAscent() + 8);
+                        }
                     }
                 }
 
