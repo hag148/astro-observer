@@ -11,7 +11,7 @@ echo.
 REM 检查Java
 where java >nul 2>nul
 if %errorlevel% neq 0 (
-    echo [错误] 未找到Java，请安装Java 17或更高版本
+    echo [错误] 未找到Java，请安装Java 25或更高版本
     pause
     exit /b 1
 )
