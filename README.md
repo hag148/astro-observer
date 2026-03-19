@@ -47,7 +47,7 @@
 
 ### 1. 克隆项目
 ```bash
-cd d:\CodeBuddy\astro-observer
+git clone https://github.com/hag148/astro-observer.git
 ```
 
 ### 2. 编译项目
